@@ -35,11 +35,10 @@ type Cursor() as this =
     let mutable cursor_fb = AllocateFramebuffer (20.0) (20.0) 1.0
     let mutable cursor_fb_vm = CursorViewModel(Some -1)
     let mutable cursor_fb_s = 1.0
-    let mutable render_queued = false
 
     let ensure_fb() =
         let s = this.GetVisualRoot().RenderScaling
-        if (cursor_fb_vm.VisualChecksum(),cursor_fb_s) <> (this.ViewModel.VisualChecksum(),s) then
+        if (cursor_fb_vm.FbIntegrityChecksum(),cursor_fb_s) <> (this.ViewModel.FbIntegrityChecksum(),s) then
             cursor_fb_vm <- this.ViewModel.Clone()
             cursor_fb_s <- s
             cursor_fb.Dispose()
@@ -91,9 +90,7 @@ type Cursor() as this =
             (* reconfigure the cursor *)
             showCursor true
             cursorTimerRun blinkon this.ViewModel.blinkwait
-            if not render_queued then
-                render_queued <- true
-                this.InvalidateVisual()
+            this.InvalidateVisual()
 
     let setCursorAnimation() =
         let transitions = Transitions()
@@ -132,7 +129,7 @@ type Cursor() as this =
 
     member this.IsActive
       with get() = this.GetValue(IsActiveProperty)
-      and set(v) = this.SetValue(IsActiveProperty, v)
+      and set(v) = this.SetValue(IsActiveProperty, v) |> ignore
 
     override this.Render(ctx) =
         (*trace "cursor" "Render text: %s" this.ViewModel.text*)
@@ -140,6 +137,10 @@ type Cursor() as this =
         let cellw p = min (double(p) / 100.0 * this.Width) 1.0
         let cellh p = min (double(p) / 100.0 * this.Height) 5.0
         let scale = this.GetVisualRoot().RenderScaling
+
+        if this.ViewModel = Unchecked.defaultof<CursorViewModel> then ()
+        else
+
         match this.ViewModel.shape, this.ViewModel.cellPercentage with
         | CursorShape.Block, _ ->
             let _, typeface = GetTypeface(this.ViewModel.text, this.ViewModel.italic, this.ViewModel.bold, this.ViewModel.typeface, this.ViewModel.wtypeface)
@@ -151,7 +152,8 @@ type Cursor() as this =
                 if this.IsActive then
                     RenderText(ctx, bounds, scale, fgpaint, bgpaint, sppaint, this.ViewModel.underline, this.ViewModel.undercurl, this.ViewModel.text, ValueNone)
                 else
-                    ctx.DrawRectangle(Pen(SolidColorBrush(this.ViewModel.bg)), bounds)
+                    let brush = SolidColorBrush(this.ViewModel.bg)
+                    ctx.DrawRectangle(brush, Pen(brush), RoundedRect(bounds))
 
             try
                 match ctx.PlatformImpl with
@@ -165,12 +167,12 @@ type Cursor() as this =
                     // deferred
                     let redraw = ensure_fb()
                     if redraw then
-                        let dc = cursor_fb.CreateDrawingContext(null)
-                        dc.PushClip(bounds)
-                        render_block dc
-                        dc.PopClip()
-                        dc.Dispose()
-                    ctx.DrawImage(cursor_fb, 1.0, Rect(0.0, 0.0, bounds.Width * scale, bounds.Height * scale), bounds)
+                        use cursor_dc = cursor_fb.CreateDrawingContext(null)
+                        cursor_dc.PushClip(bounds)
+                        render_block cursor_dc
+                        cursor_dc.PopClip()
+                        cursor_dc.Dispose()
+                    ctx.DrawImage(cursor_fb, Rect(0.0, 0.0, bounds.Width * scale, bounds.Height * scale), bounds)
             with
             | ex -> trace "cursor" "render exception: %s" <| ex.ToString()
         | CursorShape.Horizontal, p ->
@@ -180,6 +182,4 @@ type Cursor() as this =
         | CursorShape.Vertical, p ->
             let region = Rect(0.0, 0.0, cellw p, this.Height)
             ctx.FillRectangle(SolidColorBrush(this.ViewModel.bg), region)
-
-        render_queued <- false
 

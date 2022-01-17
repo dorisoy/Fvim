@@ -15,6 +15,7 @@ open Avalonia.ReactiveUI
 open System.Runtime.InteropServices
 open Avalonia.Rendering
 open Avalonia.Interactivity
+open Avalonia.VisualTree
 
 #nowarn "0025"
 
@@ -61,12 +62,15 @@ type MainWindow() as this =
     let setCursor c =
         this.Cursor <- c
 
+    let toggleTitleBar(custom) =
+        this.SystemDecorations <- if custom then SystemDecorations.None else SystemDecorations.Full
+
     let toggleFullscreen(v) =
         if not v then
             this.WindowState <- m_saved_state
             this.PlatformImpl.Resize(m_saved_size)
             this.Position <- m_saved_pos
-            this.HasSystemDecorations <- not this.ViewModel.CustomTitleBar
+            toggleTitleBar this.ViewModel.CustomTitleBar
         else
             //  The order of actions is very important.
             //  1. Remove decorations
@@ -76,19 +80,13 @@ type MainWindow() as this =
             let screen                = this.Screens.ScreenFromVisual(this)
             let screenBounds          = screen.Bounds
             let sz                    = screenBounds.Size.ToSizeWithDpi(96.0 * (this:>IRenderRoot).RenderScaling)
-            this.HasSystemDecorations <- false
+            this.SystemDecorations    <- SystemDecorations.None
             m_saved_size              <- this.ClientSize
             m_saved_pos               <- this.Position
             m_saved_state             <- this.WindowState
             this.WindowState          <- WindowState.Normal
             this.Position             <- screenBounds.TopLeft
             this.PlatformImpl.Resize(sz)
-
-    let toggleTitleBar(custom) =
-        if custom then
-            this.HasSystemDecorations <- false
-        else 
-            this.HasSystemDecorations <- not this.ViewModel.Fullscreen
 
     let dragThreshold = 5.0
 
@@ -114,18 +112,18 @@ type MainWindow() as this =
     do
         #if DEBUG
         this.Renderer.DrawFps <- true
-        Avalonia.DevToolsExtensions.AttachDevTools(this)
+        this.AttachDevTools()
         #endif
 
         DragDrop.SetAllowDrop(this, true)
         configBackground()
 
-        let flushop = 
-            if RuntimeInformation.IsOSPlatform(OSPlatform.Linux) then
-                fun () -> 
-                    let editor: Avalonia.VisualTree.IVisual = this.GetEditor()
-                    editor.InvalidateVisual()
-            else this.InvalidateVisual
+        let flushop () = 
+            let editor: IControl = this.GetEditor()
+            if editor <> null then
+              editor.InvalidateVisual()
+            else
+              this.InvalidateVisual()
 
         this.Watch [
             this.Closing.Subscribe (fun e -> Model.OnTerminating e)
@@ -142,37 +140,37 @@ type MainWindow() as this =
                 this.Renderer.DrawFps <- v)
 
             Model.Flush |> Observable.subscribe flushop
-
-            this.AddHandler(DragDrop.DropEvent, (fun _ (e: DragEventArgs) ->
-                if e.Data.Contains(DataFormats.FileNames) then
-                    Model.EditFiles <| e.Data.GetFileNames()
-                elif e.Data.Contains(DataFormats.Text) then
-                    Model.InsertText <| e.Data.GetText()
-            ))
-
-            this.AddHandler(DragDrop.DragOverEvent, (fun _ (e:DragEventArgs) ->
-                e.DragEffects <- DragDropEffects.Move ||| DragDropEffects.Link ||| DragDropEffects.Copy
-            ))
-            this.AddHandler(MainWindow.PointerMovedEvent, (fun _ (ev: PointerEventArgs) ->
-                match getDragEdge <| ev.GetPosition(this) with
-                | Some (WindowEdge.NorthWest) -> setCursor m_cursor_nw
-                | Some (WindowEdge.SouthEast) -> setCursor m_cursor_se
-                | Some (WindowEdge.NorthEast) -> setCursor m_cursor_ne
-                | Some (WindowEdge.SouthWest) -> setCursor m_cursor_sw
-                | Some (WindowEdge.North | WindowEdge.South) -> setCursor m_cursor_ns
-                | Some (WindowEdge.East | WindowEdge.West) -> setCursor m_cursor_we
-                | _ -> setCursor Cursor.Default)
-                , RoutingStrategies.Tunnel)
-            this.AddHandler(MainWindow.PointerPressedEvent, (fun _ (ev: PointerPressedEventArgs) ->
-                match getDragEdge <| ev.GetPosition(this) with
-                | Some edge ->
-                    ev.Handled <- true
-                    this.BeginResizeDrag(edge, ev)
-                | _ -> ())
-                , RoutingStrategies.Tunnel)
-
-
         ]
+
+        this.AddHandler(DragDrop.DropEvent, (fun _ (e: DragEventArgs) ->
+            if e.Data.Contains(DataFormats.FileNames) then
+                Model.EditFiles <| e.Data.GetFileNames()
+            elif e.Data.Contains(DataFormats.Text) then
+                Model.InsertText <| e.Data.GetText()
+        ))
+
+        this.AddHandler(DragDrop.DragOverEvent, (fun _ (e:DragEventArgs) ->
+            e.DragEffects <- DragDropEffects.Move ||| DragDropEffects.Link ||| DragDropEffects.Copy
+        ))
+        this.AddHandler(MainWindow.PointerMovedEvent, (fun _ (ev: PointerEventArgs) ->
+            match getDragEdge <| ev.GetPosition(this) with
+            | Some (WindowEdge.NorthWest) -> setCursor m_cursor_nw
+            | Some (WindowEdge.SouthEast) -> setCursor m_cursor_se
+            | Some (WindowEdge.NorthEast) -> setCursor m_cursor_ne
+            | Some (WindowEdge.SouthWest) -> setCursor m_cursor_sw
+            | Some (WindowEdge.North | WindowEdge.South) -> setCursor m_cursor_ns
+            | Some (WindowEdge.East | WindowEdge.West) -> setCursor m_cursor_we
+            | _ -> setCursor Cursor.Default)
+            , RoutingStrategies.Tunnel)
+        this.AddHandler(MainWindow.PointerPressedEvent, (fun _ (ev: PointerPressedEventArgs) ->
+            match getDragEdge <| ev.GetPosition(this) with
+            | Some edge ->
+                ev.Handled <- true
+                this.BeginResizeDrag(edge, ev)
+            | _ -> ())
+            , RoutingStrategies.Tunnel)
+
+
         AvaloniaXamlLoader.Load this
 
     override __.OnPointerReleased ev =
@@ -185,7 +183,7 @@ type MainWindow() as this =
         m_bottom_border <- this.FindControl<Panel>("BottomBorder")
 
     member this.GetEditor() =
-        this.LogicalChildren.[0] :?> Avalonia.VisualTree.IVisual
+      this.FindControl("RootEditor")
 
     override this.OnDataContextChanged _ =
         let ctx = this.DataContext :?> MainWindowViewModel
@@ -207,8 +205,8 @@ type MainWindow() as this =
                     deltaY <- p.Point.Y - pos.Y
                     trace "mainwindow" "first PositionChanged event: %d, %d (delta=%d, %d)" p.Point.X p.Point.Y deltaX deltaY
                 else
-                    this.SetValue(XProp, p.Point.X - deltaX)
-                    this.SetValue(YProp, p.Point.Y - deltaY)
+                    this.SetValue(XProp, p.Point.X - deltaX) |> ignore
+                    this.SetValue(YProp, p.Point.Y - deltaY) |> ignore
                 )
             ctx.MainGrid.ObservableForProperty(fun x -> x.BackgroundColor) 
             |> Observable.subscribe(fun c -> 

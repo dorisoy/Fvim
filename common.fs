@@ -1,6 +1,7 @@
 module FVim.common
 
 open System.Runtime.InteropServices
+open System.Threading.Tasks
 
 let mkparams1 (t1: 'T1)                                          = [| box t1 |]
 let mkparams2 (t1: 'T1) (t2: 'T2)                                = [| box t1; box t2 |]
@@ -74,6 +75,13 @@ let (|Integer32|_|) (x:obj) =
     | :? uint8  as x     -> Some(int32 x)
     | _ -> None
 
+let (|Float|_|) (x:obj) =
+    match x with
+    | Integer32 x        -> Some(float x)
+    | :? single as x     -> Some(float x)
+    | :? float as x      -> Some(float x)
+    | _ -> None
+
 // converts to bool in a desperate (read: JavaScript) attempt
 let (|ForceBool|_|) (x:obj) =
     match x with
@@ -104,6 +112,12 @@ let inline (>?=) (x: Result<'a, 'e>) (f: 'a -> Result<'b, 'e>) =
     match x with
     | Ok result -> f result
     | Error err -> Error err
+
+let run (t: Task) =
+    Task.Run(fun () -> t) |> ignore
+
+let runSync (t: Task) =
+    t.Wait()
 
 [<AutoOpen>]
 module internal helpers =

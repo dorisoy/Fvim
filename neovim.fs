@@ -19,6 +19,7 @@ open System.Threading.Tasks
 open System.Threading
 open FSharp.Control.Reactive
 open FSharp.Control.Tasks.V2.ContextSensitive
+open System.Runtime.InteropServices
 
 let inline private trace fmt = trace "neovim.process" fmt
 
@@ -91,7 +92,12 @@ type Nvim() =
 
         let serverExitCode() =
             match io with
-            | StartProcess proc -> try Some proc.ExitCode with _ -> None
+            | StartProcess proc -> 
+              // note: on *Nix, when the nvim child process exits,
+              // we don't get an exit code immediately. have to explicitly wait.
+              if not <| RuntimeInformation.IsOSPlatform(OSPlatform.Windows) 
+              then proc.WaitForExit(1000) |> ignore
+              try Some proc.ExitCode with _ -> None
             | StreamChannel _ -> None
             | Disconnected -> Some -1
 
@@ -110,8 +116,8 @@ type Nvim() =
             | _ -> failwith ""
 
         let read (ob: IObserver<obj>) (cancel: CancellationToken) = 
-            Task.Factory.StartNew(fun () -> 
-                trace "begin read loop"
+            Task.Factory.StartNew(fun () ->
+                trace "%s" "begin read loop"
                 let mutable ex = false
                 while not ex && not cancel.IsCancellationRequested do
                    try
@@ -134,21 +140,19 @@ type Nvim() =
                   else
                     ob.OnNext([|box Exit|])
                 else
-                  trace "end read loop."
+                  trace "%s" "end read loop."
                   ob.OnNext([|box Exit|])
-
                 ob.OnCompleted()
-
 
             , cancel, TaskCreationOptions.LongRunning, TaskScheduler.Current)
 
-        let reply (id: int) (rsp: Response) = async {
+        let reply (id: int) (rsp: Response) = task {
             let result, error = 
                 match rsp.result with
                 | Ok r -> null, r
                 | Result.Error e -> e, null
-            do! Async.AwaitTask(MessagePackSerializer.SerializeAsync(stdin, mkparams4 1 id result error))
-            do! Async.AwaitTask(stdin.FlushAsync())
+            do! MessagePackSerializer.SerializeAsync(stdin, mkparams4 1 id result error)
+            do! stdin.FlushAsync()
         }
 
         let pending = ConcurrentDictionary<int, TaskCompletionSource<Response>>()
@@ -213,7 +217,9 @@ type Nvim() =
             use cancel_reg = m_cancelSrc.Token.Register(fun () -> src.TrySetCanceled() |> ignore)
 
             let payload = mkparams4 0 myid ev.method ev.parameters
+#if DEBUG
             MessagePackSerializer.ToJson(payload) |> trace "call: %d -> %s" myid
+#endif
             do! MessagePackSerializer.SerializeAsync(stdin, payload)
             do! stdin.FlushAsync()
             return! src.Task

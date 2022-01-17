@@ -8,6 +8,8 @@ open System.Reflection
 open Avalonia.Threading
 open Avalonia.Media
 open Avalonia.Layout
+open System.Threading.Tasks
+open FSharp.Control.Tasks.V2
 
 [<Struct>]
 type Request = 
@@ -24,7 +26,7 @@ type Response =
 
 [<Struct>]
 type Event =
-| Request      of reqId: int32 * req: Request * handler: (int32 -> Response -> unit Async)
+| Request      of reqId: int32 * req: Request * handler: (int32 -> Response -> unit Task)
 | Response     of rspId: int32 * rsp: Response
 | Notification of nreq: Request
 | Error        of emsg: string
@@ -73,13 +75,13 @@ let mutable font_antialias     = true
 let mutable font_drawBounds    = false
 let mutable font_autohint      = false
 let mutable font_subpixel      = true
-let mutable font_lcdrender     = true
 let mutable font_autosnap      = true
 let mutable font_ligature      = true
 let mutable font_hintLevel     = SKPaintHinting.NoHinting
 let mutable font_weight_normal = SKFontStyleWeight.Normal
 let mutable font_weight_bold   = SKFontStyleWeight.Bold
 let mutable font_lineheight    = LineHeightOption.Default
+let mutable font_nonerd        = false
 
 // ui
 let mutable ui_available_opts  = Set.empty<string>
@@ -253,13 +255,13 @@ let msg_dispatch =
     | Request(id, req, reply) -> 
         match requestHandlers.TryGetValue req.method with
         | true, method ->
-            Async.Start(async { 
+            task { 
                 try
                     let! rsp = method(req.parameters)
                     do! reply id rsp
                 with
                 | Failure msg -> error "rpc" "request %d(%s) failed: %s" id req.method msg
-            })
+            } |> run
         | _ -> error "rpc" "request handler [%s] not found" req.method
 
     | Notification(req) ->
@@ -270,7 +272,7 @@ let msg_dispatch =
       error "rpc" "neovim: %s" err
       _errormsgs.Add err
     | Exit -> 
-      trace "rpc" "shutting down application lifetime"
+      trace "rpc" "%s" "shutting down application lifetime"
       _appLifetime.Shutdown()
     | Crash code -> 
       trace "rpc" "neovim crashed with code %d" code
@@ -285,7 +287,7 @@ module Register =
             try fn objs
             with x -> 
                 error "Request" "exception thrown: %O" x
-                async { return { result = Result.Error(box x) } })
+                Task.FromResult {  result = Result.Error(box x) })
 
     /// Register an event handler.
     let Notify name (fn: obj[] -> unit) = 
@@ -313,7 +315,7 @@ module Register =
                 | None -> ()
             | _ -> ())
         |> ignore
-        Request fullname (fun _ -> async { 
+        Request fullname (fun _ -> task { 
             let result = 
                 match Helper.GetProp fieldName with
                 | Some v -> Ok v

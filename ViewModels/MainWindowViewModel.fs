@@ -7,6 +7,7 @@ open ReactiveUI
 open Avalonia
 open Avalonia.Controls
 open System
+open System.IO
 open ui
 open Avalonia.Media.Imaging
 open Avalonia.Media
@@ -25,8 +26,6 @@ type MainWindowViewModel(cfg: config.ConfigObject.Workspace option, ?_maingrid: 
         if _maingrid.IsNone then EditorViewModel(1)
         else _maingrid.Value
 
-    let trace fmt = trace (sprintf "MainWindowVM #%d" mainGrid.GridId) fmt
-
     let mutable m_windowState = WindowState.Normal
     let mutable m_customTitleBar = false
     let mutable m_fullscreen = false
@@ -43,14 +42,19 @@ type MainWindowViewModel(cfg: config.ConfigObject.Workspace option, ?_maingrid: 
     let toggleFullScreen(gridid: int) =
         if gridid = mainGrid.GridId then
             this.Fullscreen <- not this.Fullscreen
-            trace "ToggleFullScreen %A" this.Fullscreen
+            trace (sprintf "MainWindowVM #%d" mainGrid.GridId) "ToggleFullScreen %A" this.Fullscreen
 
     let updateBackgroundImage() =
-        if not <| Object.ReferenceEquals(m_bgimg_src, null) then
-            m_bgimg_src.Dispose()
-            m_bgimg_src <- null
         try
-            let new_img = new Bitmap(States.background_image_file)
+            let path = States.background_image_file
+            let path = if path.StartsWith("~/") then
+                          Path.Join(
+                            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                            path.[2..])
+                        else
+                          path
+            trace (sprintf "MainWindowVM #%d" mainGrid.GridId) "%s" path
+            let new_img = new Bitmap(path)
             ignore <| this.RaiseAndSetIfChanged(&m_bgimg_src, new_img, "BackgroundImage")
             ignore <| this.RaiseAndSetIfChanged(&m_bgimg_w, m_bgimg_src.Size.Width, "BackgroundImageW")
             ignore <| this.RaiseAndSetIfChanged(&m_bgimg_h, m_bgimg_src.Size.Height, "BackgroundImageH")
@@ -58,7 +62,8 @@ type MainWindowViewModel(cfg: config.ConfigObject.Workspace option, ?_maingrid: 
             ignore <| this.RaiseAndSetIfChanged(&m_bgimg_halign, States.background_image_halign, "BackgroundImageHAlign")
             ignore <| this.RaiseAndSetIfChanged(&m_bgimg_valign, States.background_image_valign, "BackgroundImageVAlign")
             ignore <| this.RaiseAndSetIfChanged(&m_bgimg_stretch, States.background_image_stretch, "BackgroundImageStretch")
-        with _ -> ()
+        with _ -> 
+            ignore <| this.RaiseAndSetIfChanged(&m_bgimg_src, null, "BackgroundImage")
 
     do
         match cfg with

@@ -20,24 +20,32 @@ Cross platform Neovim front-end UI, built with [F#](https://fsharp.org/) + [Aval
     - Fedora: `dnf install fvim_package_name.rpm`
     - Compile from Source (having dotnet-sdk-3+ installed):
         ```
-            git clone https://github.com/yatli/fvim && cd fvim && dotnet publish -f netcoreapp3.0 -c Release -r linux-x64 --self-contained
+            git clone https://github.com/yatli/fvim && cd fvim && dotnet publish -f netcoreapp3.1 -c Release -r linux-x64 --self-contained
         ```
 
 ### Features
 
-- HiDPI support -- try dragging it across two screens with different DPIs ;)
-- Proper font rendering -- respects font style, baseline, [ligatures](https://github.com/tonsky/FiraCode) etc.
-- Proper cursor rendering -- color, blink etc.
-- Built-in support for Nerd font -- no need to patch your fonts!
-- East Asia wide glyph display with font fallback options
-- Emojis!
-- High performance rendering, low latency (60FPS on 4K display with reasonable font size!)
-- GPU acceleration
-- Use a Windows FVim frontend with a WSL neovim: `fvim --wsl`
-- Use the front end with a remote neovim: `fvim --ssh user@host`
-- Use custom neovim binary: `fvim --nvim ~/bin/nvim.appimage`
-- Host a daemon to preload NeoVim
-- Connect to a remote NeoVim backend: `fvim --connect localhost:9527`
+- Theming done the (Neo)Vim way
+  - Cursor color/blink
+  - Background image/composition
+  - Custom UI elements are themed with `colorscheme` settings
+  - And more!
+- Font handling
+  - Proper font rendering -- respects font style, baseline, [ligatures](https://github.com/tonsky/FiraCode) etc.
+  - Built-in support for Nerd font -- no need to patch your fonts!
+  - East Asia wide glyph display with font fallback options
+  - Fine-grained font tweaking knobs for personal font rendering
+  - Emojis!
+- GUI framework
+  - HiDPI support -- try dragging it across two screens with different DPIs ;)
+  - High performance rendering, low latency (60FPS on 4K display with reasonable font size!)
+  - GPU acceleration
+- Remoting
+  - Use a Windows FVim frontend with a WSL neovim: `fvim --wsl`
+  - Use the front end with a remote neovim: `fvim --ssh user@host`
+  - Use custom neovim binary: `fvim --nvim ~/bin/nvim.appimage`
+  - Host a daemon to preload NeoVim
+  - Connect to a remote NeoVim backend: `fvim --connect localhost:9527`
 
 Try these bindings (note, fvim-specific settings only work in `ginit.vim`, not `init.vim`!):
 ```vimL
@@ -51,7 +59,7 @@ if exists('g:fvim_loaded')
 endif
 ```
 
-Some work-in-progress fancy cursor effects:
+Some fancy cursor effects:
 ```vimL
 if exists('g:fvim_loaded')
     FVimCursorSmoothMove v:true
@@ -61,7 +69,7 @@ endif
 ![fluent_cursor](https://raw.githubusercontent.com/yatli/fvim/master/images/fluent_cursor.gif)
 
 ### Building from source
-We're now targeting `netcoreapp3.0` so make sure to install the latest preview SDK from the [.NET site](https://dotnet.microsoft.com/download/dotnet-core/3.0).
+We're now targeting `netcoreapp3.1` so make sure to install the latest preview SDK from the [.NET site](https://dotnet.microsoft.com/download/dotnet-core/3.1).
 We're actively tracking the head of `Avalonia`, and fetch the nightly packages from myget (see `NuGet.config`).
 
 Then, simply:
@@ -103,10 +111,10 @@ FVimDrawFPS v:true
 FVimFontAntialias v:true
 FVimFontAutohint v:true
 FVimFontHintLevel 'full'
-FVimFontLcdRender v:true
 FVimFontLigature v:true
 FVimFontLineHeight '+1.0' " can be 'default', '14.0', '-1.0' etc.
 FVimFontSubpixel v:true
+FVimFontNoBuiltInSymbols v:true " Disable built-in Nerd font symbols
 
 " Try to snap the fonts to the pixels, reduces blur
 " in some situations (e.g. 100% DPI).

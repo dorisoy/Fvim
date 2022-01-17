@@ -1,7 +1,6 @@
 ﻿module FVim.Program
 
 open Avalonia
-open Avalonia.Logging.Serilog
 open FSharp.Data
 open Avalonia.ReactiveUI
 open System.Threading
@@ -9,8 +8,6 @@ open Avalonia.Controls.ApplicationLifetimes
 
 open MessagePack
 open MessagePack.Resolvers
-open MessagePack.FSharp
-open MessagePack.ImmutableCollection
 
 open System
 open System.IO
@@ -28,9 +25,8 @@ let buildAvaloniaApp() =
     .UseReactiveUI()
     .With(new Win32PlatformOptions(UseDeferredRendering=false, AllowEglInitialization=true))
     .With(new AvaloniaNativePlatformOptions(UseDeferredRendering=false, UseGpu=true))
-    .With(new X11PlatformOptions(UseEGL=true, UseGpu=false))
+    .With(new X11PlatformOptions(UseDeferredRendering=false, UseEGL=true, UseGpu=true))
     .With(new MacOSPlatformOptions(ShowInDock=true))
-    .LogToDebug()
 
 type MsgPackFormatter(resolver: IFormatterResolver) = 
   let m_formatter = resolver.GetFormatter<obj>()
@@ -60,6 +56,7 @@ type MsgPackResolver() =
 
 
 [<EntryPoint>]
+[<STAThread>]
 [<CompiledName "Main">]
 let main(args: string[]) =
 
@@ -122,7 +119,7 @@ let main(args: string[]) =
   | Ok() -> 0
   | Error ex ->
     // TODO should yield so that the crash info can propagate back
-    FVim.log.trace "main" "displaying crash dialog"
+    FVim.log.trace "main" "%s" "displaying crash dialog"
     let code, msgs = States.get_crash_info()
     let crash = new CrashReportViewModel(ex, code, msgs)
     let win = new CrashReport(DataContext = crash)

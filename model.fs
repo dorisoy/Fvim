@@ -6,7 +6,6 @@ open States
 open def
 open neovim
 
-open Avalonia.Diagnostics.ViewModels
 open Avalonia.Media
 open System
 open System.Collections.Generic
@@ -17,6 +16,7 @@ open FSharp.Control.Reactive
 open System.ComponentModel
 open SkiaSharp
 open Avalonia.Layout
+open System.Threading.Tasks
 
 #nowarn "0058"
 #nowarn "0025"
@@ -33,18 +33,18 @@ module ModelImpl =
     let ev_uiopt      = Event<unit>()
     let ev_flush      = Event<unit>()
     let grids         = hashmap[]
-    let pending_msgs  = hashmap[]
     let windows       = hashmap[]
 
     let add_grid(grid: IGridUI) =
         let id = grid.Id
         grids.[id] <- grid
-        let mutable nl: ResizeArray<_> = null
-        if pending_msgs.TryGetValue(id, &nl) then
-            trace "add_grid: flushing %d pending redraw events for grid #%d" nl.Count id
-            ignore(pending_msgs.Remove id)
-            ignore(Dispatcher.UIThread.InvokeAsync(fun () ->
-                Seq.iter grid.Redraw nl))
+
+    let destroy_grid(id) =
+      match grids.TryGetValue id with
+      | false, _ -> ()
+      | true, grid ->
+        ignore <| grids.Remove id
+        grid.Detach()
 
     let add_window(win: IWindow) = 
         let id = win.RootId
@@ -55,40 +55,24 @@ module ModelImpl =
     let unicast id cmd = 
         match grids.TryGetValue id with
         | true, grid -> grid.Redraw cmd
-        | _ ->
-            trace "unicast into non-existing grid #%d: %A" id cmd
-            let mutable nl = null
-            if not(pending_msgs.TryGetValue(id, &nl)) then
-                nl <- ResizeArray()
-                pending_msgs.[id] <- nl
-            nl.Add cmd
+        | _ -> trace "unicast into non-existing grid #%d: %A" id cmd
 
     let broadcast cmd =
         for KeyValue(_,grid) in grids do
             grid.Redraw cmd
 
-    let broadcast_save id cmd =
-        let mutable found = false
-        for KeyValue(id',grid) in grids do
-            if id = id' then found <- true
-            grid.Redraw cmd
-        if not found then
-            unicast id cmd
-
     let bell (visual: bool) =
         // TODO
         trace "bell: %A" visual
-        ()
 
     let flush_throttle =
         if RuntimeInformation.IsOSPlatform(OSPlatform.OSX) then id
         else Observable.throttle(TimeSpan.FromMilliseconds 10.0)
 
-    let redraw cmd = 
+    let rec redraw cmd = 
         match cmd with
         //  Global
         | UnknownCommand x                 -> trace "unknown command %A" x
-        | GridDestroy id                   -> trace "GridDestroy %d" id //TODO
         | SetTitle title                   -> setTitle 1 title
         | SetIcon icon                     -> trace "icon: %s" icon // TODO
         | Bell                             -> bell true
@@ -102,26 +86,33 @@ module ModelImpl =
         //  Broadcast
         | PopupMenuShow _       | PopupMenuSelect _             | PopupMenuHide _
         | Busy _                | Mouse _
-        | ModeChange _          | Flush
-            ->  broadcast cmd
-        | GridCursorGoto(id,_,_) 
-            -> broadcast_save id cmd
+        | ModeChange _          | Flush 
+        | GridCursorGoto(_,_,_) 
+                                            -> broadcast cmd
         //  Unicast
-        | GridClear id          | GridScroll(id,_,_,_,_,_,_)    | WinPos(id, _, _, _, _, _)
-        | MsgSetPos(id, _, _, _)
-            -> unicast id cmd
-        | GridResize(id, c, r) 
-            -> if not(grids.ContainsKey id) then
-                 // by default add to grid #1
-                 grids.[1].AddChild id r c
-                 |> add_grid
-                else
-                 unicast id cmd
-        | GridLine lines -> 
+        | GridClear id          | GridScroll(id,_,_,_,_,_,_) ->
+            unicast id cmd
+        | WinFloatPos(id, _, _, _, _, _, _) -> 
+            trace "win_float_pos %A" cmd
+            unicast id cmd
+        | MsgSetPos(id, _, _, _)            ->
+            if not(grids.ContainsKey id) then
+              add_grid <| grids.[1].CreateChild id 1 grids.[1].GridWidth
+            unicast id cmd
+        | WinPos(id, _, _, _, w, h)
+        | GridResize(id, w, h)              -> 
+              trace "GridResize %d" id
+              if not(grids.ContainsKey id) then
+                add_grid <| grids.[1].CreateChild id h w
+              unicast id cmd
+        | GridLine lines                    -> 
             lines 
             |> Array.groupBy (fun (line: GridLine) -> line.grid)
             |> Array.iter (fun (id, lines) -> unicast id (GridLine lines))
-        | x -> trace "unimplemented command: %A" x
+        | GridDestroy id                    -> trace "GridDestroy %d" id; destroy_grid id
+        | WinClose id                       -> trace "WinClose %d (unimplemented)" id // TODO
+        | MultiRedrawCommand xs             -> Array.iter redraw xs
+        | x                                 -> trace "unimplemented command: %A" x
 
     let onGridResize(gridui: IGridUI) =
         trace "Grid #%d resized to %d %d" gridui.Id gridui.GridWidth gridui.GridHeight
@@ -423,12 +414,9 @@ module ModelImpl =
             )
             mouse |> Observable.subscribe(fun (grid, (but, act, r, c, rep), mods) -> 
                 let mods = match mods with Some mods -> mods | _ -> ""
-                async {
-                    for _ in 1..rep do
-                        let! _ = Async.AwaitTask(nvim.input_mouse but act mods grid r c)
-                        ()
-                } 
-                |> Async.RunSynchronously
+                for _ in 1..rep do
+                    nvim.input_mouse but act mods grid r c
+                    |> ignore
             )
         ]
 
@@ -440,18 +428,19 @@ let UpdateUICapabilities() =
     let opts = hashmap[]
     States.PopulateUIOptions opts
     trace "UpdateUICapabilities: %A" <| String.Join(", ", Seq.map (fun (KeyValue(k, v)) -> sprintf "%s=%b" k v) opts)
-    async {
+    task {
         for KeyValue(k, v) in opts do
-            let! _ = Async.AwaitTask <| nvim.call { method="nvim_ui_set_option"; parameters = mkparams2 k v }
+            let! _ = nvim.call { method="nvim_ui_set_option"; parameters = mkparams2 k v }
             in ()
-    } |> Async.RunSynchronously
+    } |> run
 
 /// <summary>
 /// Call this once at initialization.
 /// </summary>
-let Start opts =
-    trace "starting neovim instance..."
+let Start (opts: getopt.Options) =
+    trace "%s" "starting neovim instance..."
     trace "opts = %A" opts
+    States.ui_multigrid <- opts.debugMultigrid
     nvim.start opts
     nvim.subscribe 
         (AvaloniaSynchronizationContext.Current) 
@@ -469,6 +458,7 @@ let Start opts =
     States.Register.Prop<SKFontStyleWeight> States.parseFontWeight "font.weight.normal"
     States.Register.Prop<SKFontStyleWeight> States.parseFontWeight "font.weight.bold"
     States.Register.Prop<States.LineHeightOption> States.parseLineHeightOption "font.lineheight"
+    States.Register.Bool "font.nonerd"
     States.Register.Bool "cursor.smoothblink"
     States.Register.Bool "cursor.smoothmove"
     States.Register.Bool "key.disableShiftSpace"
@@ -500,16 +490,16 @@ let Start opts =
         States.Register.Watch "ui" ev_uiopt.Trigger
     ]
 
-    States.Register.Request "set-clipboard" (fun [| P(|String|_|)lines; String regtype |] -> async {
+    States.Register.Request "set-clipboard" (fun [| P(|String|_|)lines; String regtype |] -> task {
         States.clipboard_lines <- lines
         States.clipboard_regtype <- regtype
-        let! _ = Async.AwaitTask(Avalonia.Application.Current.Clipboard.SetTextAsync(String.Join("\n", lines)))
+        let! _ = Avalonia.Application.Current.Clipboard.SetTextAsync(String.Join("\n", lines))
         trace "set-clipboard called. regtype=%s" regtype
         return { result = Ok(box [||]) }
     })
 
-    States.Register.Request "get-clipboard" (fun _ -> async {
-        let! sysClipboard = Async.AwaitTask(Avalonia.Application.Current.Clipboard.GetTextAsync())
+    States.Register.Request "get-clipboard" (fun _ -> task {
+        let! sysClipboard = Avalonia.Application.Current.Clipboard.GetTextAsync()
         let sysClipboard = if String.IsNullOrEmpty sysClipboard then "" else sysClipboard
         let sysClipboardLines = sysClipboard.Replace("\r\n", "\n").Split("\n")
         let clipboard_eq = Array.compareWith (fun a b -> String.Compare(a,b)) States.clipboard_lines sysClipboardLines
@@ -519,13 +509,14 @@ let Start opts =
                 trace "get-clipboard: match, using clipboard lines with regtype %s" States.clipboard_regtype
                 States.clipboard_lines, States.clipboard_regtype
             else
-                trace "get-clipboard: mismatch, using system clipboard"
+                trace "%s" "get-clipboard: mismatch, using system clipboard"
                 sysClipboardLines, "v"
 
         return { result = Ok(box [| box lines; box regtype |])}
     })
 
-    trace "commencing early initialization..."
+    trace "%s" "commencing early initialization..."
+
     async {
         let! api_info = Async.AwaitTask(nvim.call { method = "nvim_get_api_info"; parameters = [||] })
         let api_query_result = 
@@ -627,10 +618,10 @@ let Start opts =
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontDrawBounds" 1 (sprintf "call rpcnotify(%d, 'font.drawBounds', <args>)" myChannel))
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontAutohint" 1 (sprintf "call rpcnotify(%d, 'font.autohint', <args>)" myChannel))
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontSubpixel" 1 (sprintf "call rpcnotify(%d, 'font.subpixel', <args>)" myChannel))
-        let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontLcdRender" 1 (sprintf "call rpcnotify(%d, 'font.lcdrender', <args>)" myChannel))
-        let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontHintLevel" 1 (sprintf "call rpcnotify(%d, 'font.hindLevel', <args>)" myChannel))
+        let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontHintLevel" 1 (sprintf "call rpcnotify(%d, 'font.hintLevel', <args>)" myChannel))
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontNormalWeight" 1 (sprintf "call rpcnotify(%d, 'font.weight.normal', <args>)" myChannel))
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontBoldWeight" 1 (sprintf "call rpcnotify(%d, 'font.weight.bold', <args>)" myChannel))
+        let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimFontNoBuiltinSymbols" 1 (sprintf "call rpcnotify(%d, 'font.nonerd', <args>)" myChannel))
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimKeyDisableShiftSpace" 1 (sprintf "call rpcnotify(%d, 'key.disableShiftSpace', <args>)" myChannel))
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimUIMultiGrid" 1 (sprintf "call rpcnotify(%d, 'ui.multigrid', <args>)" myChannel))
         let! _ = Async.AwaitTask(nvim.``command!`` "-complete=expression FVimUIPopupMenu" 1 (sprintf "call rpcnotify(%d, 'ui.popupmenu', <args>)" myChannel))
@@ -656,8 +647,7 @@ let Start opts =
         // trigger ginit upon VimEnter
         let! _ = Async.AwaitTask(nvim.command "autocmd VimEnter * runtime! ginit.vim")
         ()
-    } 
-    |> Async.RunSynchronously
+    } |> Async.RunSynchronously
 
 let Flush =
     ev_flush.Publish
@@ -691,7 +681,7 @@ let OnGridReady(gridui: IGridUI) =
         task {
             let! _ = nvim.ui_attach gridui.GridWidth gridui.GridHeight
             ()
-        } |> ignore
+        } |> run
 
 let SelectPopupMenuItem (index: int) (insert: bool) (finish: bool) =
     trace "SelectPopupMenuItem: index=%d insert=%b finish=%b" index insert finish
@@ -700,35 +690,42 @@ let SelectPopupMenuItem (index: int) (insert: bool) (finish: bool) =
         let finish = if finish then "v:true" else "v:false"
         let! _ = nvim.command (sprintf "call nvim_select_popupmenu_item(%d, %s, %s, {})" index insert finish)
         in ()
-    } |> ignore
+    } |> run
+
+let SetPopupMenuPos width height row col =
+    trace "SetPopupMenuPos: w=%f h=%f r=%f c=%f" width height row col
+    task {
+      let! _ = nvim.call { method = "nvim_ui_pum_set_bounds";  parameters = mkparams4 width height row col}
+      in ()
+    } |> run
 
 let OnFocusLost() =
     task { 
       let! _ = nvim.command "if exists('#FocusLost') | doautocmd <nomodeline> FocusLost | endif"
       in ()
-    } |> ignore
+    } |> run
 
 // see: https://github.com/equalsraf/neovim-qt/blob/e13251a6774ec8c38e7f124b524cc36e4453eb35/src/gui/shell.cpp#L1405
 let OnFocusGained() =
     task { 
       let! _ = nvim.command "if exists('#FocusGained') | doautocmd <nomodeline> FocusGained | endif"
       in ()
-    } |> ignore
+    } |> run
 
 let OnTerminated (args) =
-    trace "terminating nvim..."
+    trace "%s" "terminating nvim..."
     nvim.stop 1
 
 let OnTerminating(args: CancelEventArgs) =
     args.Cancel <- true
-    trace "window is closing"
+    trace "%s" "window is closing"
     task {
         if nvim.isRemote then
             Detach()
         else
             let! _ = nvim.quitall()
             ()
-    } |> ignore
+    } |> run
     ()
 
 let EditFiles (files: string seq) =
@@ -736,7 +733,7 @@ let EditFiles (files: string seq) =
         for file in files do
             let! _ = nvim.edit file
             ()
-    } |> ignore
+    } |> run
 
 let InsertText text =
     let sb = new Text.StringBuilder()
